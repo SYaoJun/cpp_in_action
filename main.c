@@ -13,8 +13,10 @@
 // job
 
 int total_number = 100;
+int total_jobs = 0;
 typedef struct Job{
     int pid;
+    int no;
     int num_restarts;
     int verbose;
     char *input;
@@ -24,22 +26,25 @@ typedef struct Job{
     int cmdNum;
     int pipeInput[2];
     int pipeOutput[2];
-    int startTimes;
+    int used_times;
+    int input_fd;
+    int output_fd;
+    int input_pipe[2];
+    int output_pipe[2];
+    int runnable;
+    int valid;
+    int terminated_times;
 }Job_t;
+
+// 所有的jobs
 Job_t* jobs[1024];
+
 typedef struct Param {
     int verbose_mode; // 0 - off, 1 - on
     char* input_file;
     char* job_file;
 } Param_t;
 
-typedef struct Fd {
-    int input_fd;
-    int output_fd;
-    int input_pipe[2];
-    int output_pipe[2];
-    int un_runnable;
-} Fd_t;
 
 int checkValidLine(char *line) {
     int k = 0;
@@ -73,36 +78,8 @@ int checkFileWrite(char *fileName) {
     close(fd);
     return 1;
 }
-//char** split_line(char* line, char c, int *num) {
-//    char *ret = NULL;
-//    char *temp[1024];
-//    int k = 0;
-//    char *token = strtok(line, ":");
-//    while(token != NULL)
-//    {
-//        ret = token;
-//        temp[k++] = ret;
-//        token = strtok(NULL, ":");
-//    }
-//    *num = k;
-//    return temp;
-//}
-//char** split_space_not_quote(char* line, int* num) {
-//    char *ret = NULL;
-//    char *temp[1024];
-//    int k = 0;
-//    char *token = strtok(line, " ");
-//    while(token != NULL)
-//    {
-//        ret = token;
-//        temp[k++] = ret;
-//        token = strtok(NULL, " ");
-//    }
-//    *num = k;
-//    printf("k = %d\n", k);
-//    return temp;
-//}
-int parseJobLine( Param_t * param, Job_t *job, char *line, int jobsNum) {
+
+int parseJobLine( Param_t * param, Job_t *job, char *line) {
     int u;
     char **data = split_line(line, ':');
     job->num_restarts = atoi(strdup(data[0]));
@@ -111,13 +88,12 @@ int parseJobLine( Param_t * param, Job_t *job, char *line, int jobsNum) {
     job->cmds = strdup(data[3]);
     job->cmd = split_space_not_quote(data[3], &job->cmdNum);
     job->verbose = param->verbose_mode;
-    job->pid = jobsNum;
     if(!checkFileRead(job->input)) return 0;
     if(!checkFileWrite(job->output)) return 0;
     if(pipe(job->pipeInput) == -1) return 0;
     if(pipe(job->pipeOutput) == -1) return 0;
     if(job->verbose) {
-        printf("Registering worker %d: %s", jobsNum, job->cmds);
+        printf("Registering worker %d: %s", total_jobs, job->cmds);
     }
     return 1;
 }
@@ -187,11 +163,7 @@ int is_all_digit(char * s) {
     }
     return 1;
 }
-int parse_command(char* s) {
-    if(strcmp(s, "") == 0) {
-        return 0;
-    }
-    if(s[0]=='*') {
+int parse_command(char* s, int *num, int *s_id, int* j_id, int* d) {
         char *ret = NULL;
         char *temp[1024];
         int k = 0;
@@ -202,6 +174,7 @@ int parse_command(char* s) {
             temp[k++] = ret;
             token = strtok(NULL, " ");
         }
+        *num = k;
         if(strcmp(temp[0], "*signal") == 0) {
             if(k != 3) {
                 fprintf(stdout, "Error: Incorrect number of arguments");
@@ -226,8 +199,9 @@ int parse_command(char* s) {
                         exit(1);
                     }
                     // 执行命令
-                    pid_t  pid = jobs[job_id];
-                    kill(pid, signal_id);
+                    *j_id = job_id;
+                    *s_id = signal_id;
+
                     return 0;
                 }
             }
@@ -246,177 +220,157 @@ int parse_command(char* s) {
                     exit(1);
                 }
                 // 执行命令
-                usleep(duration);
+
+                *d = duration;
                 return 0;
             }
         }else{
             fprintf(stdout, "Error: Bad command 'cmd'");
             exit(1);
         }
-    }
-
-    return 1;
 }
 
-void job_startup_phase(Job_t* job, int job_number) {
-    Fd_t *temp = (Fd_t*) malloc(sizeof(Fd_t));
-    temp->input_fd = -1;
-    temp->output_fd = -1;
+void job_startup_phase() {
+    for(int i = 0; i < total_jobs; i++) {
+        Job_t *temp = jobs[i];
+        temp->input_fd = -1;
+        temp->output_fd = -1;
 
-    if(strcmp(job->input, "") == 0) {
-        pipe(temp->input_pipe);
-    }else{
-        int fd = open(job->input, O_RDONLY);
-        // open失败返回-1
-        if(fd == -1) {
-            fprintf(stderr, "Error: unable to open \"%s\" for reading", job->input);
-            temp->un_runnable = 1;
-            exit(3);
-        }
-        temp->input_fd = fd;
-    }
-
-    if(strcmp(job->output, "") == 0) {
-        pipe(temp->output_pipe);
-    }else{
-        int fd_out = open(job->output, O_WRONLY);
-        if(fd_out == -1) {
-            fprintf(stderr, "Error: unable to open \"%s\" for writing", job->output);
-            temp->un_runnable = 1;
-            exit(3);
-        }
-        temp->output_fd = fd_out;
-    }
-
-    pid_t pid = fork();
-    if(job->verbose) {
-        fprintf(stdout, "Spawning worker %d", job_number);
-    }
-
-    if(pid < 0) {
-        printf("fork error\n");
-        exit(0);
-    }else if(pid == 0) {
-        // 子进程 input
-        if(temp->input_fd != -1) {
-            // 走文件
-            dup2(STDIN_FILENO, temp->input_fd);
-            close(temp->input_fd);
-        }else{
-            // 走管道
-            close(temp->input_pipe[1]);
+        if (strcmp(temp->input, "") == 0) {
+            pipe(temp->input_pipe);
+        } else {
+            int fd = open(temp->input, O_RDONLY);
+            // open失败返回-1
+            if (fd == -1) {
+                fprintf(stderr, "Error: unable to open \"%s\" for reading", temp->input);
+                temp->runnable = 0;
+                exit(3);
+            }
+            temp->input_fd = fd;
         }
 
-        // output
-        if(temp->output_fd != -1) {
-            // 走文件
-            dup2(STDOUT_FILENO, temp->output_fd);
-            close(temp->output_fd);
-        }else{
-            close(temp->output_pipe[0]);
+        if (strcmp(temp->output, "") == 0) {
+            pipe(temp->output_pipe);
+        } else {
+            int fd_out = open(temp->output, O_WRONLY);
+            if (fd_out == -1) {
+                fprintf(stderr, "Error: unable to open \"%s\" for writing", temp->output);
+                temp->runnable = 0;
+                exit(3);
+            }
+            temp->output_fd = fd_out;
         }
 
-        printf("child = %d\n", getpid());
-        execlp(job->cmd[0],(char* const*)job->cmd, NULL);//执行ls -al
-        // 如果成功执行 下面不会运行
-        perror("exec failed\n");
-        _exit(99);
-    }else{
-        // input
-        if(temp->input_fd != -1) {
-            close(temp->input_fd);
-        }else{
-            close(temp->input_pipe[0]);
+        pid_t pid = fork();
+        if (temp->verbose) {
+            fprintf(stdout, "Spawning worker %d", temp->no);
         }
-        // output
-        if(temp->output_fd != -1) {
-            close(temp->output_fd);
-        }else{
-            close(temp->output_pipe[1]);
-        }
-        char buf[1024];
-        read(STDIN_FILENO, buf, sizeof(buf));
-        if(parse_command(buf) == 1) {
-            write(temp->input_fd, buf, sizeof buf);
-            fprintf(stdout, "%d <-'%s'", 1, buf);
+
+        if (pid < 0) {
+            printf("fork error\n");
+            exit(0);
+        } else if (pid == 0) {
+            // 子进程 input
+            temp->pid = getpid();
+            temp->used_times = 1;
+            if (temp->input_fd != -1) {
+                // 走文件
+                dup2(temp->input_fd, STDIN_FILENO);
+                close(temp->input_fd);
+            } else {
+                // 走管道
+                close(temp->input_pipe[1]);
+            }
+
+            // output
+            if (temp->output_fd != -1) {
+                // 走文件
+                dup2(temp->output_fd, STDOUT_FILENO);
+                close(temp->output_fd);
+            } else {
+                close(temp->output_pipe[0]);
+            }
+
+            printf("child = %d\n", getpid());
+            execlp(temp->cmd[0], (char *const *) temp->cmd, NULL);//执行ls -al
+            // 如果成功执行 下面不会运行
+            perror("exec failed\n");
+            _exit(99);
+        } else {
+            // input
+            if (temp->input_fd != -1) {
+                close(temp->input_fd);
+            } else {
+                close(temp->input_pipe[0]);
+            }
+            // output
+            if (temp->output_fd != -1) {
+                close(temp->output_fd);
+            } else {
+                close(temp->output_pipe[1]);
+            }
         }
     }
 }
 
-//// 每行最大长度
-//#define LINE_MAX 1024
-//
-//char** read_line(char *path, int* num)
-//{
-//    char* temp[1024];
-//    int k = 0;
-//    FILE *fp;
-//    int line_num = 0; // 文件行数
-//    int line_len = 0; // 文件每行的长度
-//    char buf[LINE_MAX] = {0}; // 行数据缓存
-//
-//    fp = fopen(path, "r");
-//    if (NULL == fp) {
-//        printf("open %s failed.\n", path);
-//        return -1;
-//    }
-//
-//    while(fgets(buf, LINE_MAX, fp)) {
-//        line_num++;
-//        line_len = strlen(buf);
-//        // 排除换行符
-//        if ('\n' == buf[line_len - 1]) {
-//            buf[line_len - 1] = '\0';
-//            line_len--;
-//            if (0 == line_len) {
-//                //空行
-//                continue;
-//            }
-//        }
-//        // windos文本排除回车符
-//        if ('\r' == buf[line_len - 1]) {
-//            buf[line_len - 1] = '\0';
-//            line_len--;
-//            if (0 == line_len) {
-//                //空行
-//                continue;
-//            }
-//        }
-//        printf("%s\n", buf);
-//        temp[k++] = buf;
-//    }
-//
-//    if (0 == feof) {
-//        // 未读到文件末尾
-//        printf("fgets error\n");
-//        return -1;
-//    }
-//    fclose(fp);
-//    *num = k;
-//    return temp;
-//}
 void jobthing_operation(Param_t* param) {
     // 主进程
     // 监测每一个job的状态
     // job_id
-    while() {
-        int total_num = 0;
-        int reclaim_num = 0;
-        while(1){
-            size_t pid = waitpid(-1, NULL, WNOHANG);
-            if (pid > 0) {
-                reclaim_num++;
+    FILE *fp = fopen(param->input_file, "r");
+    char *cmd;
+    int common_cmd = 0;
+    while((cmd = read_line(fp)) != NULL) {
+        // 给每个job发送这个命令
+        if(strcmp(cmd, "") == 0) continue;
+        if(cmd[0] != '*'){
+            common_cmd = 1;
+        }
+        int argc = 0;
+        int job_id = 0;
+        int signal_id = 0;
+        int duration = 0;
+        parse_command(cmd, &argc, &signal_id, &job_id, &duration);
+        if(argc == 3){
+            pid_t pid = jobs[job_id]->pid;
+            kill(pid, signal_id);
+        }else if(argc == 2){
+            usleep(duration);
+        }
+        for(int i = 0; i < total_jobs; i++) {
+            Job_t * job = jobs[i];
+            if(job->used_times >= job->num_restarts) {
+                continue;
+            }else{
+                pid_t t_pid = fork();
+                if (job->verbose) {
+                    fprintf(stdout, "Spawning worker %d", job->no);
+                }
+                if(t_pid  > 0) {
+                    // 父进程
+                    write(job->input_fd, cmd, sizeof(cmd));
+                    fprintf(stdout, "%d <-'%s'", job->no, cmd);
+                    size_t pid = waitpid(-1, NULL, WNOHANG);
+                    if (pid > 0) {
+                        job->terminated_times++;
+                    }
+                }else if(t_pid == 0){
+                    // 子进程
+                    job->pid = getpid();
+                    job->used_times++;
+                    char t[1024];
+                    read(job->output_fd, t, sizeof(t));
+                    fprintf(stdout, "%d ->'%s'", job->no, t);
+                    kill(job->pid, 9);
+                }
             }
-            if(reclaim_num == total_num) break;
-        };
+        }
     }
 }
 void sighup_handler() {
 
 }
-void read_job_file(){
 
-}
 /*
  * 1. jobs数组
  * 2. jobthing读一行文件，发送给每个job，如果是*开头则表示命令
@@ -424,32 +378,34 @@ void read_job_file(){
  * */
 int main(int argc, const char* argv[]) {
     Param_t parameter;
-    Job_t* job;
     // 1. 检查参数
     parameter = check_argument(argc, argv);
     puts("argument is ok!");
 
     // 2. 从配置文件读出每一行
-    read_job_file(parameter.job_file);
-    puts("read_job_file is ok!");
-
-    int line_num = 0;
-    char** lines = read_line(parameter.job_file, &line_num);
-    // 有这么多个job
-    int current_k = 0;
-    for(int i = 0; i < line_num; i++) {
-        if(strcmp(lines[i], "\n") == 0) continue;
-        if(lines[i][0] == '#') continue;
-        if(checkValidLine(lines[i])) {
-
-            if(parseJobLine(&parameter, lines[i], job, current_k)) {
-                current_k++;
-                // 3. job启动阶段
-                job_startup_phase(job, current_k);
-                jobs[current_k] = job;
+    char * line;
+    FILE *fp = fopen(parameter.job_file, "r");
+    while((line = read_line(fp)) != NULL) {
+        if(strcmp(line, "\n") == 0) continue;
+        if(line[0] == '#') continue;
+        Job_t *temp_job = (Job_t*) malloc(sizeof(Job_t));
+        total_jobs++;
+        temp_job->no = total_jobs;
+        if(checkValidLine(line)) {
+            if(parseJobLine(&parameter, line, temp_job)) {
+                temp_job->valid = 1;
+            }else{
+                temp_job->valid = 0;
             }
+        }else{
+            temp_job->valid = 0;
         }
+        jobs[total_jobs] = temp_job;
     }
+    // 4. jobs启动阶段
+    job_startup_phase();
     sleep(1);
-    jobthing_operation(parameter);
+
+    // 5. jobs操作阶段
+    jobthing_operation(&parameter);
 }
