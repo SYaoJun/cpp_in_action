@@ -36,6 +36,7 @@ typedef struct Job{
 
 // 所有的jobs
 Job_t* jobs[1024];
+#define MAX_JOBS  512
 
 typedef struct Param {
     int verbose_mode; // 0 - off, 1 - on
@@ -51,7 +52,7 @@ char** split_line(char* line, char c, int *num) {
     while(token != NULL)
     {
         ret = token;
-        temp[k++] = ret;
+        temp[k++] = strdup(ret);
         token = strtok(NULL, ":");
     }
     *num = k;
@@ -112,7 +113,7 @@ char** read_line(char *path, int* num)
             }
         }
         printf("%s\n", buf);
-        temp[k++] = buf;
+        temp[k++] = strdup(buf);
     }
 
     if (0 == feof) {
@@ -158,10 +159,10 @@ int checkFileWrite(char *fileName) {
     return 1;
 }
 
-int parseJobLine( Param_t * param, Job_t *job, char *line) {
+int parseJobLine( Param_t * param, char* line, Job_t* job) {
     int u;
     char **data = split_line(line, ':', &u);
-    job->num_restarts = atoi(strdup(data[0]));
+    job->num_restarts = atoi(data[0]);
     job->input = strdup(data[1]);
     job->output = strdup(data[2]);
     job->cmds = strdup(data[3]);
@@ -177,11 +178,23 @@ int parseJobLine( Param_t * param, Job_t *job, char *line) {
 
 
 Param_t check_argument(int argc, const char* argv[]) {
+    // 不存在 1
+    char *t = "Usage: jobthing [-v] [-i inputfile] jobfile\n";
+    char *tt = "Error: Unable to read input file\n";
+    char *ttt = "Error: Unable to read job file\n";
+    if(argc == 1 || argc > 5) {
+        write(STDERR_FILENO, t, strlen(t));
+        exit(1);
+    }
+    // 2 3 5
     Param_t temp;
-    char *t = "Usage: jobthing [-v] [-i inputfile] jobfile";
-    char *tt = "Error: Unable to read input file";
+    char* job_file;
+    temp.job_file = NULL;
+    temp.verbose_mode = 0;
+
     int is_v_exist = 0;
     int is_i_exist = 0;
+    int is_f_exist = 0;
     // 1. 判重复
     for(int i = 1; i < argc; i ++) {
         // 遍历每个参数
@@ -202,9 +215,19 @@ Param_t check_argument(int argc, const char* argv[]) {
                 exit(1);
             }
             is_i_exist = 1;
-            if((i + 1) >= argc) {
+            int left = argc - i - 1;
+            if(left <= 1) {
+                fprintf(stderr, "Usage: jobthing [-v] [-i inputfile] jobfile\n");
                 exit(1);
             }
+            if((i + 1) >= argc) {
+                fprintf(stderr, "Usage: jobthing [-v] [-i inputfile] jobfile\n");
+                exit(1);
+            }
+//            if(strcmp(argv[i+1],"-i") == 0 || strcmp(argv[i+1],"-v") == 0) {
+//                fprintf(stderr, "Usage: jobthing [-v] [-i inputfile] jobfile\n");
+//                exit(1);
+//            }
             const char *inputFile = argv[i+1];
             FILE *fp = fopen(inputFile, "r");
             if(fp == NULL) {
@@ -217,24 +240,29 @@ Param_t check_argument(int argc, const char* argv[]) {
             continue;
         }
         // 是job file
-        FILE *fp = fopen(argv[i], "r");
-        if(fp == NULL) {
-            write(STDERR_FILENO, tt, strlen(tt));
-            exit(2);
+        if(is_f_exist == 1) {
+            write(STDERR_FILENO, t, strlen(t));
+            exit(1);
         }
-        fclose(fp);
+        is_f_exist = 1;
         temp.job_file = strdup(argv[i]);
     }
     if(temp.job_file == NULL) {
         write(STDERR_FILENO, t, strlen(t));
         exit(1);
     }
+    FILE *fp = fopen(temp.job_file, "r");
+    if(fp == NULL) {
+        write(STDERR_FILENO, ttt, strlen(ttt));
+        exit(2);
+    }
+    fclose(fp);
     return temp;
 }
 
 int is_all_digit(char * s) {
-    int len = strlen(s);
-    for(int i = 0; i < len; i++) {
+
+    for(int i = 0; s[i]!='\n' && s[i] != '\0'; i++) {
         if(!isdigit(s[i])) {
             return 0;
         }
@@ -256,25 +284,25 @@ int parse_command(char* s, int *num, int *s_id, int* j_id, int* d) {
         *num = k;
         if(strcmp(temp[0], "*signal") == 0) {
             if(k != 3) {
-                fprintf(stdout, "Error: Incorrect number of arguments");
+                fprintf(stdout, "Error: Incorrect number of arguments\n");
                 exit(1);
             }
             if(is_all_digit(temp[1]) == 0) {
-                fprintf(stdout, "Error: Invalid job");
+                fprintf(stdout, "Error: Invalid job\n");
                 exit(1);
             }else{
                 int job_id = strtol(temp[1], NULL, 10);
                 if(job_id < 1 || job_id > total_jobs ) {
-                    fprintf(stdout, "Error: Invalid job");
+                    fprintf(stdout, "Error: Invalid job\n");
                     exit(1);
                 }
                 if(is_all_digit(temp[2]) == 0) {
-                    fprintf(stdout, "Error: Invalid job");
+                    fprintf(stdout, "Error: Invalid job\n");
                     exit(1);
                 }else{
                     int signal_id = strtol(temp[2], NULL, 10);
                     if(signal_id < 1 || signal_id > 31 ) {
-                        fprintf(stdout, "Error: Invalid signal");
+                        fprintf(stdout, "Error: Invalid signal\n");
                         exit(1);
                     }
                     // 执行命令
@@ -286,16 +314,16 @@ int parse_command(char* s, int *num, int *s_id, int* j_id, int* d) {
             }
         }else if(strcmp(temp[0], "*sleep") == 0){
             if(k != 2) {
-                fprintf(stdout, "Error: Incorrect number of arguments");
+                fprintf(stdout, "Error: Incorrect number of arguments\n");
                 exit(1);
             }
             if(is_all_digit(temp[1]) == 0) {
-                fprintf(stdout, "Error: Incorrect number of arguments");
+                fprintf(stdout, "Error: Incorrect number of arguments\n");
                 exit(1);
             }else{
                 int duration = strtol(temp[1], NULL, 10);
                 if(duration < 0) {
-                    fprintf(stdout, "Error: Invalid duration");
+                    fprintf(stdout, "Error: Invalid duration\n");
                     exit(1);
                 }
                 // 执行命令
@@ -304,7 +332,7 @@ int parse_command(char* s, int *num, int *s_id, int* j_id, int* d) {
                 return 0;
             }
         }else{
-            fprintf(stdout, "Error: Bad command 'cmd'");
+            fprintf(stdout, "Error: Bad command 'cmd'\n");
             exit(1);
         }
 }
@@ -323,7 +351,7 @@ void job_startup_phase() {
             int fd = open(temp->input, O_RDONLY);
             // open失败返回-1
             if (fd == -1) {
-                fprintf(stderr, "Error: unable to open \"%s\" for reading", temp->input);
+                fprintf(stderr, "Error: unable to open \"%s\" for reading\n", temp->input);
                 temp->runnable = 0;
                 exit(3);
             }
@@ -335,7 +363,7 @@ void job_startup_phase() {
         } else {
             int fd_out = open(temp->output, O_WRONLY);
             if (fd_out == -1) {
-                fprintf(stderr, "Error: unable to open \"%s\" for writing", temp->output);
+                fprintf(stderr, "Error: unable to open \"%s\" for writing\n", temp->output);
                 temp->runnable = 0;
                 exit(3);
             }
@@ -344,7 +372,7 @@ void job_startup_phase() {
 
         pid_t pid = fork();
         if (temp->verbose) {
-            fprintf(stdout, "Spawning worker %d", temp->no);
+            fprintf(stdout, "Spawning worker %d\n", temp->no);
         }
 
         if (pid < 0) {
@@ -352,7 +380,7 @@ void job_startup_phase() {
             exit(0);
         } else if (pid == 0) {
             // 子进程 input
-            temp->pid = getpid();
+
             temp->used_times = 1;
             if (temp->input_fd != -1) {
                 // 走文件
@@ -372,12 +400,14 @@ void job_startup_phase() {
                 close(temp->output_pipe[0]);
             }
 
-            printf("child = %d\n", getpid());
+//            printf("child = %d\n", getpid());
             execlp(temp->cmd[0], (char *const *) temp->cmd, NULL);//执行ls -al
             // 如果成功执行 下面不会运行
             perror("exec failed\n");
             _exit(99);
         } else {
+            // 父进程
+            temp->pid = pid;
             // input
             if (temp->input_fd != -1) {
                 close(temp->input_fd);
@@ -403,7 +433,7 @@ void jobthing_operation(Param_t* param) {
     int common_cmd = 0;
     int viable_works = 0;
 
-    while(scanf("%s", cmd) != EOF) {
+    while(read(STDIN_FILENO, cmd, sizeof(cmd))!= EOF) {
         // 给每个job发送这个命令
         if(strcmp(cmd, "") == 0) continue;
         if(cmd[0] != '*'){
@@ -413,12 +443,15 @@ void jobthing_operation(Param_t* param) {
         int job_id = 0;
         int signal_id = 0;
         int duration = 0;
-        parse_command(cmd, &argc, &signal_id, &job_id, &duration);
-        if(argc == 3){
-            pid_t pid = jobs[job_id]->pid;
-            kill(pid, signal_id);
-        }else if(argc == 2){
-            usleep(duration);
+        if(common_cmd == 0) {
+            // 特殊命令
+            parse_command(cmd, &argc, &signal_id, &job_id, &duration);
+            if(argc == 3){
+                pid_t pid = jobs[job_id]->pid;
+                kill(pid, signal_id);
+            }else if(argc == 2){
+                usleep(duration);
+            }
         }
         for(int i = 0; i < total_jobs; i++) {
             Job_t * job = jobs[i];
@@ -428,12 +461,15 @@ void jobthing_operation(Param_t* param) {
                 viable_works++;
                 pid_t t_pid = fork();
                 if (job->verbose) {
-                    fprintf(stdout, "Restarting worker %d", job->no);
+                    fprintf(stdout, "Restarting worker %d\n", job->no);
                 }
                 if(t_pid  > 0) {
                     // 父进程
-                    write(job->input_fd, cmd, sizeof(cmd));
-                    fprintf(stdout, "%d <-'%s'", job->no, cmd);
+                    job->pid = t_pid;
+                    if(common_cmd == 1){
+                        write(STDIN_FILENO, cmd, sizeof(cmd));
+                        fprintf(stdout, "%d <-\'%s\'\n", job->no, cmd);
+                    }
                     int status;
                     size_t pid = waitpid(-1, &status, WNOHANG);
                     if (pid > 0) {
@@ -442,22 +478,24 @@ void jobthing_operation(Param_t* param) {
                     char buf[1024];
                     if(WEXITSTATUS(status)) {
                         memset(buf, 0, sizeof buf);
-                        sprintf(buf, "Job %d has terminated with exit code %d", job->no, WEXITSTATUS(status));
+                        sprintf(buf, "Job %d has terminated with exit code %d\n", job->no, WEXITSTATUS(status));
                         write(STDOUT_FILENO, buf, strlen(buf));
                     }else if(WIFSIGNALED(status)) {
                         memset(buf, 0, sizeof buf);
-                        sprintf(buf, "Job %d has terminated due to signal %d", job->no, WTERMSIG(status));
+                        sprintf(buf, "Job %d has terminated due to signal %d\n", job->no, WTERMSIG(status));
                         write(STDERR_FILENO, buf, strlen(buf));
                     }
 
                 }else if(t_pid == 0){
                     // 子进程
-                    job->pid = getpid();
+
                     job->used_times++;
                     char t[1024];
-                    read(job->output_fd, t, sizeof(t));
-                    fprintf(stdout, "%d ->'%s'", job->no, t);
-                    kill(job->pid, 9);
+                    if(common_cmd == 1) {
+                        read(job->output_fd, t, sizeof(t));
+                        fprintf(stdout, "%d ->\'%s\'\n", job->no, t);
+                        kill(job->pid, 9);
+                    }
                 }
             }
         }
@@ -466,9 +504,6 @@ void jobthing_operation(Param_t* param) {
             exit(0);
         }
     }
-}
-void sighup_handler() {
-
 }
 
 /*
@@ -480,35 +515,77 @@ int main(int argc, const char* argv[]) {
     Param_t parameter;
     // 1. 检查参数
     parameter = check_argument(argc, argv);
+//    puts("OK!");
     // 2. 从配置文件读出每一行
     char * line;
     int lines_num = 0;
+    *jobs = (Job_t*)malloc(sizeof(jobs));
     char** total_lines = read_line(parameter.job_file, &lines_num);
     int idx = 0;
     while(idx < lines_num) {
-        line = total_lines[idx++];
+        line = strdup(total_lines[idx++]);
         if(strcmp(line, "\n") == 0) continue;
         if(line[0] == '#') continue;
         Job_t *temp_job = (Job_t*) malloc(sizeof(Job_t));
-        total_jobs++;
         temp_job->no = total_jobs;
         if(checkValidLine(line)) {
-            if(parseJobLine(&parameter, line, temp_job) == 1) {
-                temp_job->valid = 1;
-                fprintf(stdout, "Registering worker %d: %s", temp_job->no, temp_job->cmds);
-            }else{
-                fprintf(stderr, "Error: invalid job specification: %s", line);
+            int jdx = 0;
+            int n = strlen(line);
+            // num
+            int c = 0;
+            for(jdx = 0; jdx < n; jdx++) {
+                if(line[jdx] ==':') break;
+                c = c * 10 + (line[jdx]-'0');
+            }
+            // input_file
+            jdx++;
+            char input_file[1024];
+            int p = 0;
+            while(jdx < n && line[jdx] != ':') {
+                input_file[p++] = line[jdx++];
+            }
+            input_file[p] = '\0';
+            // output
+            jdx++;
+            char out_file[1024];
+            p = 0;
+            while(jdx < n && line[jdx] != ':') {
+                out_file[p++] = line[jdx++];
+            }
+            out_file[p] = '\0';
+            // cmd
+            jdx++;
+            char cmds[1024];
+            memset(cmds, 0, sizeof cmds);
+            p = 0;
+            while(jdx < n) {
+                cmds[p++] = line[jdx++];
+            }
+            cmds[p] = '\0';
+            // 赋值
+            temp_job->num_restarts = c;
+            temp_job->input = input_file;
+            temp_job->output = out_file;
+            temp_job->cmds = cmds;
+//            job->cmd = split_space_not_quote(data[3], &job->cmdNum);
+            temp_job->verbose = parameter.verbose_mode;
+            if((strcmp(temp_job->input, "") != 0 && !checkFileRead(temp_job->input) )|| (strcmp(temp_job->output, "") != 0 && !checkFileWrite(temp_job->output))) {
+                fprintf(stderr, "Error: invalid job specification: %s\n", line);
                 temp_job->valid = 0;
+            }else{
+                temp_job->valid = 1;
+                fprintf(stdout, "Registering worker %d: %s\n", temp_job->no, temp_job->cmds);
             }
         }else{
             temp_job->valid = 0;
         }
         jobs[total_jobs] = temp_job;
+        total_jobs++;
     }
-    // 4. jobs启动阶段
+//    // 4. jobs启动阶段
     job_startup_phase();
     sleep(1);
-
-    // 5. jobs操作阶段
+//
+//    // 5. jobs操作阶段
     jobthing_operation(&parameter);
 }
