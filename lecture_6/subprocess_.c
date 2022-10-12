@@ -20,7 +20,7 @@ subprocess_t subprocess(const char* command) {
     int fds[2];
     pipe(fds);
     subprocess_t process = {fork(), fds[1]}; // 1写 0读
-    if (process.pid == 0) { // 多进程怎么调试 这个地方有阻塞等数据吗？
+    if (process.pid == 0) {
         close(fds[1]);
         dup2(fds[0], STDIN_FILENO); // 把标准输入重定向为从管道中读
         close(fds[0]);

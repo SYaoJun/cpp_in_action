@@ -53,5 +53,6 @@ int main(int argc, const char* argv[]) {
     pid_t pid = waitpid(sp.pid, &status, 0);
     // 没有学习过如何根据进程退出状态，判断信息
     return pid == sp.pid && WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status);
+
     return 0;
 }
