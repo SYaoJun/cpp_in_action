@@ -46,8 +46,12 @@ int main() {
     sigaddset(&mask, SIGCHLD);
     sigprocmask(SIG_BLOCK, &mask, NULL);
     sigset_t pending_set;
-    sigpending(&pending_set);
-    print_set(&pending_set);
+    struct sigaction action;
+    action.sa_handler = my_handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;
+    // sleep放在后面就能回收？为啥呢
+    sigaction(SIGCHLD, &action, NULL);
     int i;
     pid_t pid;
     for(i = 0; i < N; i++) {
@@ -61,17 +65,9 @@ int main() {
         // 注册信号处理函数
 
         // 为什么sleep放在前面就不能正确回收呢？
-        struct sigaction action;
-        action.sa_handler = my_handler;
-        sigemptyset(&action.sa_mask);
-        action.sa_flags = SA_RESTART;
-        // sleep放在后面就能回收？为啥呢
-        sigaction(SIGCHLD, &action, NULL);
-        sigpending(&pending_set);
-        print_set(&pending_set);
+        sleep(2);
         sigprocmask(SIG_UNBLOCK, &mask, NULL);
-        sigpending(&pending_set);
-        print_set(&pending_set);
+
 //        sigprocmask(SIG_SETMASK, &prev, NULL);
         printf("I am parent %d\n", getpid());
         while(1);
