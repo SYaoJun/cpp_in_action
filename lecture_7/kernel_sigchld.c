@@ -24,18 +24,16 @@ void print_set(sigset_t *sigset) {
 void my_handler(int sig) {
     // 可能同时有多个子进程结束
     int status = 0;
-    printf("enter....\n");
     pid_t pid;
     // (pid = waitpid(-1, &status, WNOHANG)) != -1)
     while((pid = wait(&status)) != -1) {
-        printf("Child exit %d.\n", WEXITSTATUS(status));
-//        if (WIFEXITED(status)) {
-//            printf("==========Child exited with status %d.\n", WEXITSTATUS(status));
-//        }else if(WIFSIGNALED(status)) {
-//            printf("Child exited with signal %d.\n", WTERMSIG(status));
-//        }else {
-//            printf("Child terminated abnormally.\n");
-//        }
+        if (WIFEXITED(status)) {
+            printf("==========Child exited with status %d.\n", WEXITSTATUS(status));
+        }else if(WIFSIGNALED(status)) {
+            printf("Child exited with signal %d.\n", WTERMSIG(status));
+        }else {
+            printf("Child terminated abnormally.\n");
+        }
     }
 }
 int main() {
@@ -45,12 +43,12 @@ int main() {
     sigemptyset(&mask);
     sigaddset(&mask, SIGCHLD);
     sigprocmask(SIG_BLOCK, &mask, NULL);
-    sigset_t pending_set;
+    // 已经设置了信号屏蔽字
+
     struct sigaction action;
     action.sa_handler = my_handler;
     sigemptyset(&action.sa_mask);
     action.sa_flags = SA_RESTART;
-    // sleep放在后面就能回收？为啥呢
     sigaction(SIGCHLD, &action, NULL);
     int i;
     pid_t pid;
@@ -66,10 +64,10 @@ int main() {
 
         // 为什么sleep放在前面就不能正确回收呢？
         sleep(2);
+        // 解除阻塞，即使父进程多睡眠几秒，也会正常回收子进程
         sigprocmask(SIG_UNBLOCK, &mask, NULL);
-
-//        sigprocmask(SIG_SETMASK, &prev, NULL);
         printf("I am parent %d\n", getpid());
+        // 这里一定要阻塞等待
         while(1);
     }else{
         // 子进程
